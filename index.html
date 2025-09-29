@@ -128,7 +128,7 @@
     const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.hostname + (location.port ? ':' + location.port : ':3000');
     const wss = new WebSocket(WS_URL);
     console.log(wss)
-    const ws = new WebSocket("ws://10.10.2.119:3000");
+    const ws = new WebSocket("https://vdbqm047-3000.asse.devtunnels.ms");
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
     const status = document.getElementById('status');
@@ -328,5 +328,6 @@
     }, 200);
   </script>
 </body>
+
 
 </html>
