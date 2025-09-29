@@ -1,0 +1,332 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <title>Tiny WS Arena</title>
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: #111;
+      color: #ddd;
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+      /* no awkward scrollbars */
+    }
+
+    /* Responsive canvas container */
+    #game {
+      display: block;
+      margin: 0 auto;
+      max-width: 100%;
+      max-height: calc(100vh - 160px);
+      /* leave room for controls on mobile */
+      background: #0d0d0d;
+      border: 1px solid #222;
+      border-radius: 8px;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
+    }
+
+    /* Status top-right */
+    #status {
+      text-align: right;
+      margin-bottom: 6px;
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      font-weight: 600;
+      color: #fff;
+      font-size: 14px;
+      padding: 4px 8px;
+      background: rgba(0, 0, 0, 0.4);
+      border-radius: 6px;
+    }
+
+    /* Player list top-left */
+    #playerList {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 10px 14px;
+      color: #fff;
+      font-family: monospace;
+      border-radius: 8px;
+      font-size: 14px;
+      max-width: 35%;
+      overflow-wrap: break-word;
+    }
+
+    /* Touch controls */
+    .controls {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .controls button {
+      width: 64px;
+      height: 64px;
+      font-size: 22px;
+      border-radius: 50%;
+      border: none;
+      background: #222;
+      color: #fff;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    .controls button:active {
+      background: #444;
+      transform: scale(0.95);
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 600px) {
+      #status {
+        font-size: 12px;
+        padding: 3px 6px;
+      }
+
+      #playerList {
+        font-size: 12px;
+        padding: 8px;
+      }
+
+      .controls button {
+        width: 56px;
+        height: 56px;
+        font-size: 18px;
+      }
+    }
+  </style>
+
+</head>
+
+<body>
+  <div id="playerList"></div>
+  <canvas id="game" width="1000" height="600"></canvas>
+
+
+  <div id="status">Connecting...</div>
+
+  <div class="controls">
+    <button id="up">↑</button>
+    <button id="left">←</button>
+    <button id="down">↓</button>
+    <button id="right">→</button>
+  </div>
+
+  <script>
+    const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.hostname + (location.port ? ':' + location.port : ':3000');
+    const wss = new WebSocket(WS_URL);
+    console.log(wss)
+    const ws = new WebSocket("ws://10.10.2.119:3000");
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const status = document.getElementById('status');
+
+    let myId = null;
+    const players = {}; // id -> {x,y,vx,vy,color, lastUpdate, renderX, renderY}
+    const interpBufferMs = 100; // interpolation delay
+
+    ws.addEventListener('open', () => status.textContent = 'Connected. Waiting for server...');
+    ws.addEventListener('message', (ev) => {
+      const msg = JSON.parse(ev.data);
+      handleServerMessage(msg);
+    });
+    ws.addEventListener('close', () => status.textContent = 'Disconnected');
+
+    function handleServerMessage(msg) {
+      switch (msg.type) {
+        case 'welcome':
+          myId = msg.id;
+          status.textContent = 'Welcome, id=' + myId;
+          break;
+        case 'player_join':
+          players[msg.id] = {
+            x: msg.x, y: msg.y, vx: 0, vy: 0, color: msg.color, lastUpdate: Date.now(),
+            renderX: msg.x, renderY: msg.y
+          };
+          break;
+        case 'remove':
+          delete players[msg.id];
+          break;
+        case 'snapshot':
+          // update state for all players
+          const t = Date.now();
+          for (const s of msg.players) {
+            const p = players[s.id] || {};
+            p.x = s.x; p.y = s.y; p.vx = s.vx; p.vy = s.vy;
+            p.color = s.color;
+            p.ip = s.ip;  // <--- save IP
+            p.lastUpdate = t;
+            // if first time seeing player, set render positions immediate
+            if (!('renderX' in p)) {
+              p.renderX = s.x; p.renderY = s.y;
+            }
+            players[s.id] = p;
+          }
+          updatePlayerList();
+          break;
+        case 'pong':
+          // optional: RTT measurement
+          break;
+      }
+    }
+
+    // Input handling
+    const inputState = { up: false, down: false, left: false, right: false };
+    function sendInput() {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', input: inputState }));
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      if (['w', 'arrowup'].includes(k)) inputState.up = true;
+      if (['s', 'arrowdown'].includes(k)) inputState.down = true;
+      if (['a', 'arrowleft'].includes(k)) inputState.left = true;
+      if (['d', 'arrowright'].includes(k)) inputState.right = true;
+      sendInput();
+    });
+    window.addEventListener('keyup', (e) => {
+      const k = e.key.toLowerCase();
+      if (['w', 'arrowup'].includes(k)) inputState.up = false;
+      if (['s', 'arrowdown'].includes(k)) inputState.down = false;
+      if (['a', 'arrowleft'].includes(k)) inputState.left = false;
+      if (['d', 'arrowright'].includes(k)) inputState.right = false;
+      sendInput();
+    });
+
+    function bindTouch(id, dir) {
+      const btn = document.getElementById(id);
+
+      // touchstart → set true
+      btn.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        inputState[dir] = true;
+        sendInput();
+      });
+
+      // touchend/cancel → set false
+      btn.addEventListener("touchend", (e) => {
+        e.preventDefault();
+        inputState[dir] = false;
+        sendInput();
+      });
+      btn.addEventListener("touchcancel", (e) => {
+        e.preventDefault();
+        inputState[dir] = false;
+        sendInput();
+      });
+    }
+
+    bindTouch("up", "up");
+    bindTouch("down", "down");
+    bindTouch("left", "left");
+    bindTouch("right", "right");
+
+    // Simple interpolation: move renderX towards server x smoothly
+    function updateRender(dt) {
+      for (const id in players) {
+        const p = players[id];
+        // linear interpolation towards authoritative position (could do velocity-based extrapolation)
+        const blend = Math.min(1, dt * 10); // speed factor
+        p.renderX += (p.x - p.renderX) * blend;
+        p.renderY += (p.y - p.renderY) * blend;
+      }
+    }
+
+    function checkCollisions() {
+      const ids = Object.keys(players);
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          const a = players[ids[i]];
+          const b = players[ids[j]];
+
+          const dx = a.renderX - b.renderX;
+          const dy = a.renderY - b.renderY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const minDist = 28; // since radius=14+14
+
+          if (dist < minDist) {
+            // push them apart equally
+            const overlap = (minDist - dist) / 2;
+            const nx = dx / dist;
+            const ny = dy / dist;
+
+            a.renderX += nx * overlap;
+            a.renderY += ny * overlap;
+            b.renderX -= nx * overlap;
+            b.renderY -= ny * overlap;
+
+            // Collision alert
+            if (ids[i] === myId || ids[j] === myId) {
+              status.textContent = "🚨 Agayy!!!";
+            }
+          }
+        }
+      }
+    }
+
+    function updatePlayerList() {
+      const list = document.getElementById("playerList");
+      list.innerHTML = "<b>Players</b><br>" +
+        Object.values(players).map(p => p.ip || "???").join("<br>");
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // grid
+      ctx.fillStyle = '#081018';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (const id in players) {
+        const p = players[id];
+        ctx.beginPath();
+        ctx.arc(p.renderX, p.renderY, 14, 0, Math.PI * 2);
+        ctx.fillStyle = p.color || '#888';
+        ctx.fill();
+        ctx.lineWidth = (id === myId) ? 3 : 1;
+        ctx.strokeStyle = (id === myId) ? '#fff' : '#222';
+        ctx.stroke();
+
+        // draw id
+        ctx.fillStyle = '#eee';
+        ctx.font = '12px sans-serif';
+        ctx.fillText(id === myId ? 'you' : id.slice(0, 6), p.renderX - 16, p.renderY - 20);
+      }
+    }
+
+    let last = performance.now();
+    function loop(now) {
+      const dt = (now - last) / 1000;
+      last = now;
+      updateRender(dt);
+      checkCollisions(); // 👈 add this
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    // periodically send pings and inputs in case keys missed
+    setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+        sendInput();
+      }
+    }, 200);
+  </script>
+</body>
+
+</html>
